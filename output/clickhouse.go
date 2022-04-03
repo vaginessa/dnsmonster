@@ -11,10 +11,8 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/compress"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	"github.com/google/uuid"
 	"github.com/mosajjal/dnsmonster/util"
 	metrics "github.com/rcrowley/go-metrics"
-	"github.com/rogpeppe/fastuuid"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -67,9 +65,7 @@ func (chConfig ClickhouseConfig) OutputChannel() chan util.DNSResult {
 	return chConfig.outputChannel
 }
 
-var uuidGen = fastuuid.MustNewGenerator()
-
-func (chConfig ClickhouseConfig) connectClickhouseRetry() (driver.Conn, driver.Batch) {
+func (chConfig ClickhouseConfig) connectClickhouseRetry() driver.Conn {
 	tick := time.NewTicker(5 * time.Second)
 	// don't retry connection if we're doing dry run
 	if chConfig.ClickhouseOutputType == 0 {
@@ -77,9 +73,9 @@ func (chConfig ClickhouseConfig) connectClickhouseRetry() (driver.Conn, driver.B
 	}
 	defer tick.Stop()
 	for {
-		c, b, err := chConfig.connectClickhouse()
+		c, err := chConfig.connectClickhouse()
 		if err == nil {
-			return c, b
+			return c
 		} else {
 			log.Errorf("Error connecting to Clickhouse: %s", err)
 		}
@@ -90,7 +86,7 @@ func (chConfig ClickhouseConfig) connectClickhouseRetry() (driver.Conn, driver.B
 	}
 }
 
-func (chConfig ClickhouseConfig) connectClickhouse() (driver.Conn, driver.Batch, error) {
+func (chConfig ClickhouseConfig) connectClickhouse() (driver.Conn, error) {
 	compressOption := &clickhouse.Compression{Method: compress.NONE}
 	tlsOption := &tls.Config{InsecureSkipVerify: util.GeneralFlags.SkipTLSVerification}
 	if chConfig.ClickhouseCompress {
@@ -118,10 +114,10 @@ func (chConfig ClickhouseConfig) connectClickhouse() (driver.Conn, driver.Batch,
 	// connection, err := clickhouse.Open(fmt.Sprintf("tcp://%v?debug=%v&skip_verify=%v&secure=%v&compress=%v&username=%s&password=%s&database=%s", chConfig.ClickhouseAddress, chConfig.ClickhouseDebug, util.GeneralFlags.SkipTLSVerification, chConfig.ClickhouseSecure, chConfig.ClickhouseCompress, chConfig.ClickhouseUsername, chConfig.ClickhousePassword, chConfig.ClickhouseDatabase))
 	if err != nil {
 		log.Error(err)
-		return connection, nil, err
+		return connection, err
 	}
-	batch, err := connection.PrepareBatch(ctx, "INSERT INTO DNS_LOG")
-	return connection, batch, err
+	// batch, err := connection.PrepareBatch(context.Background(), "INSERT INTO DNS_LOG")
+	return connection, err
 }
 
 // Main handler for Clickhouse output. the data from the dispatched output channel will reach this function
@@ -132,20 +128,25 @@ func (chConfig ClickhouseConfig) connectClickhouse() (driver.Conn, driver.Batch,
 // clickhouse folder for the file tables.sql
 func (chConfig ClickhouseConfig) Output() {
 	for i := 0; i < int(chConfig.ClickhouseWorkers); i++ {
+		util.GeneralFlags.GetWg().Add(1)
 		go chConfig.clickhouseOutputWorker()
 	}
 }
 
 func (chConfig ClickhouseConfig) clickhouseOutputWorker() {
-	conn, batch := chConfig.connectClickhouseRetry()
-	ctx = context.Background()
+	conn := chConfig.connectClickhouseRetry()
 	clickhouseSentToOutput := metrics.GetOrRegisterCounter("clickhouseSentToOutput", metrics.DefaultRegistry)
 	clickhouseSkipped := metrics.GetOrRegisterCounter("clickhouseSkipped", metrics.DefaultRegistry)
 	clickhouseFailed := metrics.GetOrRegisterCounter("clickhouseFailed", metrics.DefaultRegistry)
 
+	batch, err := conn.PrepareBatch(context.Background(), "INSERT INTO DNS_LOG")
+	if err != nil {
+		log.Error(err)
+	}
+
 	c := uint(0)
+	// var now = time.Now()
 	for {
-		var now = time.Now()
 		select {
 		case data := <-chConfig.outputChannel:
 			for _, dnsQuery := range data.DNS.Question {
@@ -180,12 +181,9 @@ func (chConfig ClickhouseConfig) clickhouseOutputWorker() {
 						doBit = 1
 					}
 				}
-				tempUuidGen := uuidGen.Next()
-				var myUUID uuid.UUID
-				copy(myUUID[:], tempUuidGen[:16])
 				err := batch.Append(
-					data.Timestamp,
-					time.Now(),
+					data.Timestamp, // packet timestamp
+					time.Now(),     // index timestamp
 					util.GeneralFlags.ServerName,
 					data.IPVersion,
 					SrcIP,
@@ -201,25 +199,30 @@ func (chConfig ClickhouseConfig) clickhouseOutputWorker() {
 					uint8(data.DNS.Rcode),
 					dnsQuery.Name,
 					data.PacketLength,
-					myUUID,
 				)
 				if err != nil {
-					log.Warnf("Error while executing batch: %v", err)
+					log.Error("Error while executing batch: %v. This error might be because of the changes in the table schema", err)
 					clickhouseFailed.Inc(1)
 				}
-				//todo: test batch timeout here.
-				if c%chConfig.ClickhouseBatchSize == 0 || time.Since(now) > chConfig.ClickhouseDelay {
-
-					err = batch.Send()
-					if err != nil {
+				//todo: test batch timeout here. does not work currently
+				if c%chConfig.ClickhouseBatchSize == 0 { // || time.Since(now) > chConfig.ClickhouseDelay
+					if err = batch.Send(); err != nil {
 						log.Warnf("Error while executing batch: %v", err)
 						clickhouseFailed.Inc(int64(c))
 					}
 					c = 0
-					batch, _ = conn.PrepareBatch(ctx, "INSERT INTO DNS_LOG")
-					now = time.Now()
+					if batch, err = conn.PrepareBatch(context.Background(), "INSERT INTO DNS_LOG"); err != nil {
+						log.Error(err)
+					}
 				}
 			}
+		case <-*util.GeneralFlags.GetExit():
+			if err = batch.Send(); err != nil {
+				log.Warnf("Error while executing batch: %v", err)
+				clickhouseFailed.Inc(int64(c))
+			}
+			util.GeneralFlags.GetWg().Done()
+			return
 		}
 	}
 }

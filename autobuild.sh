@@ -11,7 +11,7 @@ EOF
 
 dockercomposetemplate=$(cat <<EOF
   ch:
-    image: yandex/clickhouse-server:21.12-alpine
+    image: clickhouse/clickhouse-server:22.3.2.2-alpine
     restart: always
     ports:
       - "8123:8123"
@@ -24,10 +24,11 @@ dockercomposetemplate=$(cat <<EOF
         soft: 262144
         hard: 262144
     volumes:
-      - ./clickhouse/tables.sql:/tmp/tables.sql
+      - ./clickhouse/tables-v2.sql:/tmp/tables.sql
       - ./clickhouse/dictionaries/:/opt/dictionaries/
       - ./clickhouse/dns_dictionary.xml:/etc/clickhouse-server/dns_dictionary.xml
       - ./clickhouse/config.xml:/etc/clickhouse-server/config.xml
+      - ./clickhouse/users.xml:/etc/clickhouse-server/users.xml
       - CLICKHOUSE_LOGS_FOLDER:/var/log/clickhouse-server/
       - CLICKHOUSE_DATA_FOLDER:/var/lib/clickhouse/
     healthcheck:
@@ -149,7 +150,7 @@ docker-compose up -d
 echo "Waiting 20 seconds for Containers to be fully up and running "
 sleep 20
 
-echo "Crete tables for Clickhouse"
+echo "Creating tables for Clickhouse"
 docker-compose exec ch /bin/sh -c 'cat /tmp/tables.sql | clickhouse-client -h 127.0.0.1 --multiquery'
 
 echo "downloading latest version of Clickhouse plugin for Grafana"
