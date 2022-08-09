@@ -1,6 +1,6 @@
 module github.com/mosajjal/dnsmonster
 
-go 1.17
+go 1.18
 
 require (
 	github.com/deathowl/go-metrics-prometheus v0.0.0-20200518174047-74482eab5bfb
