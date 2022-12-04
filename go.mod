@@ -5,6 +5,7 @@ go 1.19
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.4.3
 	github.com/deathowl/go-metrics-prometheus v0.0.0-20221009205350-f2a1482ba35b
+	github.com/go-sql-driver/mysql v1.7.0
 	github.com/golang-collections/collections v0.0.0-20130729185459-604e922904d3
 	github.com/gopacket/gopacket v0.1.1-0.20221105012133-f7b7aadd88df
 	github.com/hashicorp/go-syslog v1.0.0

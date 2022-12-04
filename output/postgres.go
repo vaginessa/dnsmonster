@@ -14,7 +14,7 @@ import (
 )
 
 type psqlConfig struct {
-	PsqlOutputType    uint          `long:"psqloutputtype"          ini-name:"psqloutputtype"          env:"DNSMONSTER_PSQLOUTPUTTYPE"          default:"0"                                                       description:"What should be written to Microsoft Psql. options:\n;\t0: Disable Output\n;\t1: Enable Output without any filters\n;\t2: Enable Output and apply skipdomains logic\n;\t3: Enable Output and apply allowdomains logic\n;\t4: Enable Output and apply both skip and allow domains logic" choice:"0" choice:"1" choice:"2" choice:"3" choice:"4"`
+	PsqlOutputType    uint          `long:"psqloutputtype"          ini-name:"psqloutputtype"          env:"DNSMONSTER_PSQLOUTPUTTYPE"          default:"0"                                                       description:"What should be written to Postgres. options:\n;\t0: Disable Output\n;\t1: Enable Output without any filters\n;\t2: Enable Output and apply skipdomains logic\n;\t3: Enable Output and apply allowdomains logic\n;\t4: Enable Output and apply both skip and allow domains logic" choice:"0" choice:"1" choice:"2" choice:"3" choice:"4"`
 	PsqlEndpoint      string        `long:"psqlendpoint"            ini-name:"psqlendpoint"            env:"DNSMONSTER_PSQLOUTPUTENDPOINT"      default:""                                                        description:"Psql endpoint used. must be in uri format. example: postgres://username:password@hostname:port/database?sslmode=disable"`
 	PsqlWorkers       uint          `long:"psqlworkers"             ini-name:"psqlworkers"             env:"DNSMONSTER_PSQLWORKERS"             default:"1"                                                       description:"Number of PSQL workers"`
 	PsqlBatchSize     uint          `long:"psqlbatchsize"           ini-name:"psqlbatchsize"           env:"DNSMONSTER_PSQLBATCHSIZE"           default:"1"                                                       description:"Psql Batch Size"`
@@ -172,7 +172,6 @@ func (psqConf psqlConfig) OutputWorker() {
 				)
 
 				if int(c%psqConf.PsqlBatchSize) == div { // this block will never reach if batch delay is enabled
-					log.Warnf("here %d", c) //todo:remove
 					br := conn.SendBatch(timeoutContext, batch)
 					_, err := br.Exec()
 					if err != nil {
