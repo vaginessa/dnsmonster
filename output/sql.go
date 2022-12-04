@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -15,8 +16,8 @@ import (
 type sqlConfig struct {
 	SqlOutputType    uint          `long:"sqloutputtype"          ini-name:"sqloutputtype"          env:"DNSMONSTER_SQLOUTPUTTYPE"          default:"0"                                                       description:"What should be written to MySQL-compatibe database. options:\n;\t0: Disable Output\n;\t1: Enable Output without any filters\n;\t2: Enable Output and apply skipdomains logic\n;\t3: Enable Output and apply allowdomains logic\n;\t4: Enable Output and apply both skip and allow domains logic" choice:"0" choice:"1" choice:"2" choice:"3" choice:"4"`
 	SqlEndpoint      string        `long:"sqlendpoint"            ini-name:"sqlendpoint"            env:"DNSMONSTER_SQLOUTPUTENDPOINT"      default:""                                                        description:"Sql endpoint used. must be in uri format. example: \"username:password@tcp(127.0.0.1:3306)/db_name\""`
-	SqlWorkers       uint          `long:"sqlworkers"             ini-name:"sqlworkers"             env:"DNSMONSTER_SQLWORKERS"             default:"1"                                                       description:"Number of SQL workers"`
-	SqlBatchSize     uint          `long:"sqlbatchsize"           ini-name:"sqlbatchsize"           env:"DNSMONSTER_SQLBATCHSIZE"           default:"1"                                                       description:"Sql Batch Size"`
+	SqlWorkers       uint          `long:"sqlworkers"             ini-name:"sqlworkers"             env:"DNSMONSTER_SQLWORKERS"             default:"8"                                                       description:"Number of SQL workers"`
+	SqlBatchSize     uint          `long:"sqlbatchsize"           ini-name:"sqlbatchsize"           env:"DNSMONSTER_SQLBATCHSIZE"           default:"1000"                                                    description:"Sql Batch Size"`
 	SqlBatchDelay    time.Duration `long:"sqlbatchdelay"          ini-name:"sqlbatchdelay"          env:"DNSMONSTER_SQLBATCHDELAY"          default:"0s"                                                      description:"Interval between sending results to Sql if Batch size is not filled. Any value larger than zero takes precedence over Batch Size"`
 	SqlBatchTimeout  time.Duration `long:"sqlbatchtimeout"        ini-name:"sqlbatchtimeout"        env:"DNSMONSTER_SQLBATCHTIMEOUT"        default:"5s"                                                      description:"Timeout for any INSERT operation before we consider them failed"`
 	SqlSaveFullQuery bool          `long:"sqlsavefullquery"       ini-name:"sqlsavefullquery"       env:"DNSMONSTER_SQLSAVEFULLQUERY"       description:"Save full packet query and response in JSON format."`
@@ -65,6 +66,7 @@ func (sqConf sqlConfig) OutputChannel() chan util.DNSResult {
 func (sqConf sqlConfig) connectSql() *sql.DB {
 
 	db, err := sql.Open("mysql", sqConf.SqlEndpoint)
+	db.SetConnMaxLifetime(time.Second * 10)
 	if err != nil {
 		// This will not be a connection error, but a DSN parse error or
 		// another initialization error.
@@ -76,12 +78,10 @@ func (sqConf sqlConfig) connectSql() *sql.DB {
 		log.Fatal(err)
 	}
 
-	// BUG: inet is not a type for MySQL. needs to be changed to int and use helper functions
-	// to convert an IP back to int when saving
 	_, err = db.Exec(
 		`CREATE TABLE IF NOT EXISTS DNS_LOG (PacketTime timestamp, IndexTime timestamp,
-				Server text, IPVersion integer, SrcIP inet, DstIP inet, Protocol char(3),
-				QR smallint, OpCode smallint, Class smallint, Type integer, Edns0Present smallint,
+				Server text, IPVersion integer, SrcIP binary(16), DstIP binary(16), Protocol char(3),
+				QR smallint, OpCode smallint, Class int, Type integer, Edns0Present smallint,
 				DoBit smallint, FullQuery text, ResponseCode smallint, Question text, Size smallint);`,
 	)
 	if err != nil {
@@ -122,6 +122,8 @@ func (sqConf sqlConfig) OutputWorker() {
 		VALUES `
 	var insertStmt = insertQuery
 	vals := []interface{}{}
+	var stmt = new(sql.Stmt)
+	var err error
 
 	for {
 		select {
@@ -172,43 +174,47 @@ func (sqConf sqlConfig) OutputWorker() {
 				)
 
 				if int(c%sqConf.SqlBatchSize) == div { // this block will never reach if batch delay is enabled
-					// trim the last ,
-					insertStmt = insertStmt[0 : len(insertStmt)-1]
-					// prepare the statement
-					stmt, _ := conn.Prepare(insertStmt)
-
-					// format all vals at once
-					_, err := stmt.Exec(vals...)
+					//trim the last , prepare the statement
+					stmt, err = conn.Prepare(strings.TrimSuffix(insertStmt, ","))
 					if err != nil {
-						log.Errorf("Error while executing batch: %v", err)
+						log.Errorf("Error while preparing batch: %v", err)
+						log.Infof("%+v, %d", vals, c)
 						sqlFailed.Inc(int64(c))
 					} else {
-						sqlSentToOutput.Inc(int64(c))
+						// format all vals at once
+						_, err = stmt.Exec(vals...)
+						if err != nil {
+							log.Errorf("Error while executing batch: %v", err)
+							sqlFailed.Inc(int64(c))
+						} else {
+							sqlSentToOutput.Inc(int64(c))
+						}
 					}
 					c = 0
 					insertStmt = insertQuery
+					vals = []interface{}{}
 				}
 
 			}
 		case <-ticker.C:
-			// trim the last ,
-			insertStmt = insertStmt[0 : len(insertStmt)-1]
-			// prepare the statement
-			stmt, _ := conn.Prepare(insertStmt)
-
-			// format all vals at once
-			_, err := stmt.Exec(vals...)
+			//trim the last , prepare the statement
+			stmt, err := conn.Prepare(strings.TrimSuffix(insertStmt, ","))
 			if err != nil {
-				log.Errorf("Error while executing batch: %v", err)
+				log.Errorf("Error while preparing batch: %v", err)
 				sqlFailed.Inc(int64(c))
 			} else {
-				sqlSentToOutput.Inc(int64(c))
+				// format all vals at once
+				_, err = stmt.Exec(vals...)
+				if err != nil {
+					log.Errorf("Error while executing batch: %v", err)
+					sqlFailed.Inc(int64(c))
+				} else {
+					sqlSentToOutput.Inc(int64(c))
+				}
 			}
 			c = 0
 			insertStmt = insertQuery
+			vals = []interface{}{}
 		}
 	}
 }
-
-// This will allow an instance to be spawned at import time
-// var _ = sqlConfig{}.initializeFlags()
