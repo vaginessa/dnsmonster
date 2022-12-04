@@ -76,6 +76,8 @@ func (sqConf sqlConfig) connectSql() *sql.DB {
 		log.Fatal(err)
 	}
 
+	// BUG: inet is not a type for MySQL. needs to be changed to int and use helper functions
+	// to convert an IP back to int when saving
 	_, err = db.Exec(
 		`CREATE TABLE IF NOT EXISTS DNS_LOG (PacketTime timestamp, IndexTime timestamp,
 				Server text, IPVersion integer, SrcIP inet, DstIP inet, Protocol char(3),
