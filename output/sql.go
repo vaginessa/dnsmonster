@@ -14,13 +14,13 @@ import (
 )
 
 type sqlConfig struct {
-	SqlOutputType    uint          `long:"sqloutputtype"          ini-name:"sqloutputtype"          env:"DNSMONSTER_SQLOUTPUTTYPE"          default:"0"                                                       description:"What should be written to MySQL-compatibe database. options:\n;\t0: Disable Output\n;\t1: Enable Output without any filters\n;\t2: Enable Output and apply skipdomains logic\n;\t3: Enable Output and apply allowdomains logic\n;\t4: Enable Output and apply both skip and allow domains logic" choice:"0" choice:"1" choice:"2" choice:"3" choice:"4"`
-	SqlEndpoint      string        `long:"sqlendpoint"            ini-name:"sqlendpoint"            env:"DNSMONSTER_SQLOUTPUTENDPOINT"      default:""                                                        description:"Sql endpoint used. must be in uri format. example: \"username:password@tcp(127.0.0.1:3306)/db_name\""`
-	SqlWorkers       uint          `long:"sqlworkers"             ini-name:"sqlworkers"             env:"DNSMONSTER_SQLWORKERS"             default:"8"                                                       description:"Number of SQL workers"`
-	SqlBatchSize     uint          `long:"sqlbatchsize"           ini-name:"sqlbatchsize"           env:"DNSMONSTER_SQLBATCHSIZE"           default:"1000"                                                    description:"Sql Batch Size"`
-	SqlBatchDelay    time.Duration `long:"sqlbatchdelay"          ini-name:"sqlbatchdelay"          env:"DNSMONSTER_SQLBATCHDELAY"          default:"0s"                                                      description:"Interval between sending results to Sql if Batch size is not filled. Any value larger than zero takes precedence over Batch Size"`
-	SqlBatchTimeout  time.Duration `long:"sqlbatchtimeout"        ini-name:"sqlbatchtimeout"        env:"DNSMONSTER_SQLBATCHTIMEOUT"        default:"5s"                                                      description:"Timeout for any INSERT operation before we consider them failed"`
-	SqlSaveFullQuery bool          `long:"sqlsavefullquery"       ini-name:"sqlsavefullquery"       env:"DNSMONSTER_SQLSAVEFULLQUERY"       description:"Save full packet query and response in JSON format."`
+	SQLOutputType    uint          `long:"sqloutputtype"          ini-name:"sqloutputtype"          env:"DNSMONSTER_SQLOUTPUTTYPE"          default:"0"                                                       description:"What should be written to MySQL-compatibe database. options:\n;\t0: Disable Output\n;\t1: Enable Output without any filters\n;\t2: Enable Output and apply skipdomains logic\n;\t3: Enable Output and apply allowdomains logic\n;\t4: Enable Output and apply both skip and allow domains logic" choice:"0" choice:"1" choice:"2" choice:"3" choice:"4"`
+	SQLEndpoint      string        `long:"sqlendpoint"            ini-name:"sqlendpoint"            env:"DNSMONSTER_SQLOUTPUTENDPOINT"      default:""                                                        description:"Sql endpoint used. must be in uri format. example: \"username:password@tcp(127.0.0.1:3306)/db_name\""`
+	SQLWorkers       uint          `long:"sqlworkers"             ini-name:"sqlworkers"             env:"DNSMONSTER_SQLWORKERS"             default:"8"                                                       description:"Number of SQL workers"`
+	SQLBatchSize     uint          `long:"sqlbatchsize"           ini-name:"sqlbatchsize"           env:"DNSMONSTER_SQLBATCHSIZE"           default:"1000"                                                    description:"Sql Batch Size"`
+	SQLBatchDelay    time.Duration `long:"sqlbatchdelay"          ini-name:"sqlbatchdelay"          env:"DNSMONSTER_SQLBATCHDELAY"          default:"0s"                                                      description:"Interval between sending results to Sql if Batch size is not filled. Any value larger than zero takes precedence over Batch Size"`
+	SQLBatchTimeout  time.Duration `long:"sqlbatchtimeout"        ini-name:"sqlbatchtimeout"        env:"DNSMONSTER_SQLBATCHTIMEOUT"        default:"5s"                                                      description:"Timeout for any INSERT operation before we consider them failed"`
+	SQLSaveFullQuery bool          `long:"sqlsavefullquery"       ini-name:"sqlsavefullquery"       env:"DNSMONSTER_SQLSAVEFULLQUERY"       description:"Save full packet query and response in JSON format."`
 	outputChannel    chan util.DNSResult
 	outputMarshaller util.OutputMarshaller
 	closeChannel     chan bool
@@ -44,7 +44,7 @@ func (sqConf sqlConfig) Initialize(ctx context.Context) error {
 		return err
 	}
 
-	if sqConf.SqlOutputType > 0 && sqConf.SqlOutputType < 5 {
+	if sqConf.SQLOutputType > 0 && sqConf.SQLOutputType < 5 {
 		log.Info("Creating Sql Output Channel")
 		go sqConf.Output(ctx)
 	} else {
@@ -63,9 +63,9 @@ func (sqConf sqlConfig) OutputChannel() chan util.DNSResult {
 	return sqConf.outputChannel
 }
 
-func (sqConf sqlConfig) connectSql() *sql.DB {
+func (sqConf sqlConfig) connectSQL() *sql.DB {
 
-	db, err := sql.Open("mysql", sqConf.SqlEndpoint)
+	db, err := sql.Open("mysql", sqConf.SQLEndpoint)
 	db.SetConnMaxLifetime(time.Second * 10)
 	if err != nil {
 		// This will not be a connection error, but a DSN parse error or
@@ -92,7 +92,7 @@ func (sqConf sqlConfig) connectSql() *sql.DB {
 }
 
 func (sqConf sqlConfig) Output(ctx context.Context) {
-	for i := 0; i < int(sqConf.SqlWorkers); i++ {
+	for i := 0; i < int(sqConf.SQLWorkers); i++ {
 		go sqConf.OutputWorker()
 	}
 }
@@ -104,14 +104,14 @@ func (sqConf sqlConfig) OutputWorker() {
 
 	c := uint(0)
 
-	conn := sqConf.connectSql()
+	conn := sqConf.connectSQL()
 
 	ticker := time.NewTicker(time.Second * 5)
 	div := 0
-	if sqConf.SqlBatchDelay > 0 {
-		sqConf.SqlBatchSize = 1
+	if sqConf.SQLBatchDelay > 0 {
+		sqConf.SQLBatchSize = 1
 		div = -1
-		ticker = time.NewTicker(sqConf.SqlBatchDelay)
+		ticker = time.NewTicker(sqConf.SQLBatchDelay)
 	} else {
 		ticker.Stop()
 	}
@@ -131,13 +131,13 @@ func (sqConf sqlConfig) OutputWorker() {
 			for _, dnsQuery := range data.DNS.Question {
 
 				c++
-				if util.CheckIfWeSkip(sqConf.SqlOutputType, dnsQuery.Name) {
+				if util.CheckIfWeSkip(sqConf.SQLOutputType, dnsQuery.Name) {
 					sqlSkipped.Inc(1)
 					continue
 				}
 
 				fullQuery := ""
-				if sqConf.SqlSaveFullQuery {
+				if sqConf.SQLSaveFullQuery {
 					fullQuery = sqConf.outputMarshaller.Marshal(data)
 				}
 
@@ -173,7 +173,7 @@ func (sqConf sqlConfig) OutputWorker() {
 					data.PacketLength,
 				)
 
-				if int(c%sqConf.SqlBatchSize) == div { // this block will never reach if batch delay is enabled
+				if int(c%sqConf.SQLBatchSize) == div { // this block will never reach if batch delay is enabled
 					//trim the last , prepare the statement
 					stmt, err = conn.Prepare(strings.TrimSuffix(insertStmt, ","))
 					if err != nil {
